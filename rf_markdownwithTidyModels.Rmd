@@ -1,0 +1,317 @@
+---
+title: "Random Forest"
+author: "Elen Irazabal"
+editor_options:
+  chunk_output_type: inline
+output:
+  html_document:
+    collapsed: no
+    df_print: paged
+    fig_caption: yes
+    highlight: pygments
+    smooth_scroll: yes
+    table_heigth: 6
+    theme: united
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  pdf_document:
+    df_print: paged
+    fig_caption: yes
+    highlight: tango
+subtitle: Presentación Deusto
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Random Forest
+
+
+
+```{r, echo=TRUE, warning=FALSE, results='hide', message=FALSE}
+# Cargamos los paquetes
+list.of.packages <- c("ggplot2", "dplyr", "broom", "ggpubr", "corrplot", "visreg", "GGally", "ggcorrplot", "tidyverse", "tidymodels", "vip", "tidypredict", "randomForest", "doParallel")
+
+# new.packages es la lista de paquetes que faltan
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+
+# Si hay algún paquete a instalar, lo instala. 
+if(length(new.packages)) {
+  install.packages(new.packages)}
+
+# Carga los paquetes 
+lapply(list.of.packages, require, character.only = TRUE)
+```
+
+
+### Cargamos los datos de Titanic 
+
+
+```{r, echo=TRUE}
+# Cargamos datos de train y test 
+
+data_train <- read.csv(file = "https://raw.githubusercontent.com/geodra/Titanic-Dataset/master/data/train.csv", stringsAsFactors = FALSE, header = TRUE)
+
+data_test <- read.csv(file = "https://raw.githubusercontent.com/geodra/Titanic-Dataset/master/data/test.csv", stringsAsFactors = FALSE, header = TRUE)
+```
+
+En el dataset del Titanic tenemos 11 columnas.El dataset de test no tiene la columna `survived`, que es la que queremos predecir.
+
+```{r}
+head(data_train)
+```
+
+
+```{r}
+head(data_test)
+```
+
+### Limpiamos datos
+
+```{r, echo=TRUE}
+# Tenemos variables numéricas y categóricas
+
+summary(data_train)
+```
+
+
+```{r}
+
+# Eliminamos columnas no nos van a ayudar en la predicción.
+# Ejecuta que las columnas eliminadas no están en el dataset train y test y si están, las elimina.  
+
+cols_to_drop <- c("PassengerId","Cabin","Name", "Ticket")
+
+data_train <- data_train[ , !(names(data_train) %in% cols_to_drop)]
+data_test <- data_test[ , !(names(data_test) %in% cols_to_drop)]
+
+head(data_train,7)
+```
+
+
+
+```{r}
+
+# Pasamos ciertas variables como factor para que sean categóricas (ahora mismo son numéricoas).
+data_train[c('Pclass', 'SibSp', 'Parch', 'Survived')] <- lapply(data_train[c('Pclass', 'SibSp', 'Parch', 'Survived')], factor)
+data_test[c('Pclass', 'SibSp', 'Parch')] <- lapply(data_test[c('Pclass', 'SibSp', 'Parch')], factor)
+```
+
+
+```{r}
+# Ya podemos ver que la clase es categórica. Número de personas que pertenecen a cada clase. 
+barplot(table(data_train$Pclass))
+```
+
+```{r}
+
+# Quita los NA
+data_train <- data_train %>% 
+  drop_na()
+
+data_test <- data_test %>% 
+  drop_na()
+```
+
+
+```{r}
+# Aquí vemos las columnas que hemos conservado y el cambio a factor. 
+summary(data_train)
+```
+
+### Visualizamos datos
+
+```{r}
+
+ggplot(data=data_train,
+       aes(x=Sex,fill=factor(Survived)))+
+  geom_bar()
+
+  data_train %>% ggplot(aes(factor(Survived)))+
+  geom_bar()
+
+```
+```{r}
+ggplot(data=data_train,
+       aes(x=Pclass, fill=factor(Survived))) +
+  geom_bar(position="Dodge")
+```
+
+
+
+
+```{r}
+# Vemos que sobrevivieron menos que los que murieron. Vemos que los que pagaron muy poco tenian probabilidad mayor de morir.
+# La edad no está nada clara si influye, poco significativa. 
+ggpairs(data_train[,c('Survived', 'Age', 'Fare')], progress=FALSE, ggplot2::aes(colour=Survived))
+```
+
+
+
+```{r}
+ggplot(data_train) +
+  geom_histogram(aes(x = Age, 
+                     fill = Survived), color = 'lightblue', alpha=0.6) +
+  labs(x = 'Age') +
+  ggtitle("Survived ~ Age ") +
+  
+  theme_bw() +
+  theme(axis.text.x = element_text(face = 'bold', size = 10),
+        axis.text.y = element_text(face = 'bold', size = 10))
+```
+
+### Modelo Random Forest
+
+
+```{r}
+# modelo
+
+# Que sea reproducible y siempre haga la misma división. 
+set.seed(42)
+
+# Create a split object, el 80% de los datos de train 
+titanic_split <- initial_split(data_train, prop = 0.80)
+```
+
+
+```{r}
+# Índices de los datos que irán a train. Resto a test
+titanic_split$in_id
+```
+
+
+```{r}
+# Obtenemos los datos de train. Son el 80% de los datos
+titanic_train <- titanic_split %>% 
+  training()
+
+# Obtenemos el dataset de validación. Son el 20% de los datos.
+titanic_valid <- titanic_split %>% 
+  testing()
+```
+
+```{r}
+
+# Creamos una tubería que quita NAs. 
+titanic_recipe <- titanic_train %>%
+  recipe(Survived ~.) %>%
+  step_naomit(all_predictors())
+
+titanic_prep <- prep(titanic_recipe)
+
+titanic_prep
+```
+
+
+```{r}
+# Lo aplicamos a los datos de train 
+titanic_train_prep <- juice(titanic_prep)
+titanic_train_prep
+```
+
+
+
+
+```{r}
+# Aplicamos la receta a los datos de test
+titanic_valid_prep <- titanic_prep %>%
+  bake(titanic_valid) 
+
+titanic_valid_prep
+
+```
+
+
+```{r}
+
+# Declaramos el modelo random forest con 100 árboles. 
+rf_model <- rand_forest(trees = 100, mode = "classification") %>% 
+  set_engine('randomForest')
+
+# View object properties
+rf_model
+```
+
+
+
+```{r}
+
+# Aquí ya indicamos que la variable a predecir es Survived. Estimación de error en train 19.41%, accuracy del 83% en train. 
+
+# 41 errores en el 0 cuando era un 1
+# 7 errores en el uno cuando era un cero. 
+rf_fit <- rf_model %>% 
+  fit(Survived ~ ., data = titanic_train_prep)
+
+# Vemos las propiedades de rf_fit
+rf_fit
+```
+
+
+
+```{r}
+
+# Las variables más importantes para predecir 
+vip(rf_fit,  col = '#006EA1')
+```
+
+
+
+
+```{r}
+# Modelo de random forest con los parametros adaptados a datos del train (rf.fit) ahora aplicamos a los datos validacion 
+# Si sobrevive o no. Mismo orden que en el dataset. 
+# Predice sin supervisión,aún no le hemos pasado la columna survived. 
+predict(object= rf_fit, new_data=titanic_valid_prep)
+```
+
+```{r}
+
+# Ahora añadir nuestra predicción con el resultado real del dataset del titanic. El primero está bien
+rf_fit %>%
+  predict(titanic_valid_prep) %>% 
+  bind_cols(titanic_valid_prep['Survived'])
+```
+
+```{r}
+
+# El accuracy es del 83% del que hemos predicho frente al real. 
+rf_fit %>%
+  predict(titanic_valid_prep) %>% 
+  bind_cols(titanic_valid_prep) %>%
+  metrics(truth = Survived, estimate = .pred_class)
+```
+
+```{r}
+
+# Las probabilidades por cada fila de que haya sobrevivido o no. 
+rf_fit %>%
+  predict(titanic_valid_prep, type = "prob")
+```
+### Resultados
+
+```{r}
+
+# Le añadimos la columna survived 
+survived_prob <- rf_fit %>%
+  predict(titanic_valid_prep, type='prob') %>% 
+  bind_cols(titanic_valid_prep['Survived'])
+survived_prob
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
